@@ -1,0 +1,1414 @@
+# =============================================================================
+# Market Basket Analysis — Complete Streamlit Application
+# Title: Frequent Pattern and Association Rule Mining at Scale via Graph-based
+#        Entity Resolution and Data Deduplication, Applied to Retail Market
+#        Basket Analysis for Supermarket Chains
+# Author: Final-Year Project
+# =============================================================================
+import os
+import io
+import re
+import tempfile
+import warnings
+import numpy as np
+import pandas as pd
+import networkx as nx
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
+import streamlit.components.v1 as components
+from collections import defaultdict
+from itertools import combinations
+warnings.filterwarnings("ignore")
+# --------------------------------------------------------------------------- #
+#  Optional heavy imports — graceful degradation if not installed              #
+# --------------------------------------------------------------------------- #
+try:
+    from rapidfuzz import fuzz, process as rfprocess
+    RAPIDFUZZ_OK = True
+except ImportError:
+    RAPIDFUZZ_OK = False
+try:
+    from mlxtend.frequent_patterns import apriori, fpgrowth, association_rules
+    from mlxtend.preprocessing import TransactionEncoder
+    MLXTEND_OK = True
+except ImportError:
+    MLXTEND_OK = False
+try:
+    from pyvis.network import Network
+    PYVIS_OK = True
+except ImportError:
+    PYVIS_OK = False
+# ============================================================================
+#  PAGE CONFIG & GLOBAL STYLES
+# ============================================================================
+st.set_page_config(
+    page_title="Market Basket Analysis | Supermarket Chain Analytics",
+    page_icon="🛒",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+# Injected CSS for premium look
+st.markdown(
+    """
+    <style>
+    /* ---- Google Font ---- */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+    /* ---- App background ---- */
+    .stApp { background: linear-gradient(135deg, #0f0c29, #302b63, #24243e); }
+    /* ---- Sidebar ---- */
+    [data-testid="stSidebar"] {
+        background: rgba(255,255,255,0.04);
+        border-right: 1px solid rgba(255,255,255,0.08);
+    }
+    [data-testid="stSidebar"] * { color: #e2e8f0 !important; }
+    /* ---- Main content text ---- */
+    .stMarkdown, .stText, p, li, label { color: #e2e8f0; }
+    /* ---- Metric cards ---- */
+    [data-testid="metric-container"] {
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 16px;
+        padding: 1rem 1.2rem;
+        backdrop-filter: blur(12px);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    [data-testid="metric-container"]:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 8px 30px rgba(99,102,241,0.3);
+    }
+    [data-testid="stMetricValue"] { color: #a78bfa !important; font-weight: 700; }
+    [data-testid="stMetricLabel"] { color: #94a3b8 !important; }
+    /* ---- Section headers ---- */
+    .section-header {
+        background: linear-gradient(90deg, #6366f1, #8b5cf6, #a78bfa);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        font-size: 2rem;
+        font-weight: 800;
+        margin-bottom: 0.3rem;
+    }
+    .section-sub {
+        color: #94a3b8;
+        font-size: 0.95rem;
+        margin-bottom: 1.5rem;
+    }
+    /* ---- Cards ---- */
+    .card {
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(255,255,255,0.10);
+        border-radius: 20px;
+        padding: 1.5rem 2rem;
+        backdrop-filter: blur(16px);
+        margin-bottom: 1.5rem;
+    }
+    /* ---- Dataframes ---- */
+    .stDataFrame { border-radius: 12px; overflow: hidden; }
+    /* ---- Buttons ---- */
+    .stButton > button {
+        background: linear-gradient(135deg, #6366f1, #8b5cf6);
+        color: white !important;
+        border: none;
+        border-radius: 12px;
+        font-weight: 600;
+        padding: 0.5rem 1.5rem;
+        transition: all 0.2s ease;
+    }
+    .stButton > button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(99,102,241,0.4);
+    }
+    /* ---- Download buttons ---- */
+    .stDownloadButton > button {
+        background: linear-gradient(135deg, #10b981, #059669);
+        color: white !important;
+        border: none;
+        border-radius: 12px;
+        font-weight: 600;
+    }
+    /* ---- Tabs ---- */
+    .stTabs [data-baseweb="tab-list"] { gap: 0.5rem; }
+    .stTabs [data-baseweb="tab"] {
+        background: rgba(255,255,255,0.05);
+        border-radius: 10px;
+        color: #94a3b8;
+        font-weight: 500;
+    }
+    .stTabs [aria-selected="true"] {
+        background: linear-gradient(135deg, #6366f1, #8b5cf6) !important;
+        color: white !important;
+    }
+    /* ---- Expanders ---- */
+    .streamlit-expanderHeader {
+        background: rgba(255,255,255,0.05) !important;
+        border-radius: 10px !important;
+        color: #e2e8f0 !important;
+    }
+    /* ---- Alerts / Info ---- */
+    .stAlert { border-radius: 12px; }
+    /* ---- Selectbox / Slider ---- */
+    .stSelectbox > div > div, .stSlider { color: #e2e8f0; }
+    /* ---- Hero banner ---- */
+    .hero-banner {
+        background: linear-gradient(135deg, rgba(99,102,241,0.25), rgba(139,92,246,0.25));
+        border: 1px solid rgba(139,92,246,0.35);
+        border-radius: 24px;
+        padding: 2.5rem 3rem;
+        text-align: center;
+        margin-bottom: 2rem;
+        backdrop-filter: blur(20px);
+    }
+    .hero-banner h1 {
+        font-size: 2.2rem;
+        font-weight: 800;
+        background: linear-gradient(90deg, #a78bfa, #60a5fa, #34d399);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        margin-bottom: 0.5rem;
+    }
+    .hero-banner p { color: #cbd5e1; font-size: 1rem; line-height: 1.7; }
+    /* ---- Badge pill ---- */
+    .badge {
+        display: inline-block;
+        padding: 0.25rem 0.75rem;
+        border-radius: 999px;
+        font-size: 0.8rem;
+        font-weight: 600;
+        margin: 0.2rem;
+    }
+    .badge-purple { background: rgba(139,92,246,0.2); color: #a78bfa; border: 1px solid rgba(139,92,246,0.4); }
+    .badge-blue   { background: rgba(59,130,246,0.2); color: #60a5fa; border: 1px solid rgba(59,130,246,0.4); }
+    .badge-green  { background: rgba(16,185,129,0.2); color: #34d399; border: 1px solid rgba(16,185,129,0.4); }
+    /* ---- PyVis graph container ---- */
+    .graph-container { border-radius: 16px; overflow: hidden; border: 1px solid rgba(255,255,255,0.1); }
+    /* ---- Divider ---- */
+    hr { border-color: rgba(255,255,255,0.08) !important; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+# ============================================================================
+#  HELPER UTILITIES
+# ============================================================================
+REQUIRED_COLS = {"transaction_id", "product_name"}
+SAMPLE_CSV_PATH = os.path.join(os.path.dirname(__file__), "sample_supermarket_transactions.csv")
+def normalize_name(name: str) -> str:
+    """Lowercase, strip whitespace, collapse punctuation."""
+    name = str(name).lower().strip()
+    name = re.sub(r"[-_/\\]+", " ", name)
+    name = re.sub(r"\s+", " ", name)
+    return name
+def to_csv_bytes(df: pd.DataFrame) -> bytes:
+    return df.to_csv(index=False).encode("utf-8")
+def badge(text: str, kind: str = "purple") -> str:
+    return f'<span class="badge badge-{kind}">{text}</span>'
+# ============================================================================
+#  DATA LOADING & VALIDATION
+# ============================================================================
+def load_and_map_columns(df: pd.DataFrame, col_map: dict) -> pd.DataFrame:
+    """Rename columns according to user mapping."""
+    return df.rename(columns={v: k for k, v in col_map.items() if v})
+def validate_dataframe(df: pd.DataFrame) -> tuple[bool, str]:
+    if df.empty:
+        return False, "The uploaded file is empty."
+    missing = REQUIRED_COLS - set(df.columns)
+    if missing:
+        return False, f"Missing required columns: {', '.join(missing)}"
+    if df["transaction_id"].isna().all():
+        return False, "Column 'transaction_id' contains no valid values."
+    if df["product_name"].isna().all():
+        return False, "Column 'product_name' contains no valid values."
+    return True, "OK"
+# ============================================================================
+#  DATA PREPROCESSING
+# ============================================================================
+def preprocess(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """Clean and normalise the transaction data. Returns cleaned df + stats."""
+    stats = {}
+    stats["raw_rows"] = len(df)
+    stats["raw_transactions"] = df["transaction_id"].nunique()
+    stats["raw_products"] = df["product_name"].nunique()
+    # Drop rows with null transaction_id or product_name
+    df = df.dropna(subset=["transaction_id", "product_name"])
+    # Normalise product names
+    df = df.copy()
+    df["product_name_raw"] = df["product_name"]
+    df["product_name"] = df["product_name"].apply(normalize_name)
+    # Drop duplicate (transaction_id, product_name) pairs
+    before_dedup = len(df)
+    df = df.drop_duplicates(subset=["transaction_id", "product_name"])
+    stats["duplicate_rows_removed"] = before_dedup - len(df)
+    # Drop transactions with no products
+    txn_counts = df.groupby("transaction_id")["product_name"].count()
+    valid_txns = txn_counts[txn_counts > 0].index
+    df = df[df["transaction_id"].isin(valid_txns)]
+    stats["clean_rows"] = len(df)
+    stats["clean_transactions"] = df["transaction_id"].nunique()
+    stats["clean_products"] = df["product_name"].nunique()
+    return df, stats
+# ============================================================================
+#  GRAPH-BASED ENTITY RESOLUTION & DEDUPLICATION
+# ============================================================================
+def build_similarity_graph(
+    products: list[str], threshold: float = 80.0
+) -> nx.Graph:
+    """
+    Build a product-similarity graph using RapidFuzz token_sort_ratio.
+    Nodes = product names; edges = similarity ≥ threshold.
+    """
+    G = nx.Graph()
+    G.add_nodes_from(products)
+    if not RAPIDFUZZ_OK:
+        st.warning("RapidFuzz not installed — similarity graph unavailable.")
+        return G
+    for i, p1 in enumerate(products):
+        for p2 in products[i + 1:]:
+            score = fuzz.token_sort_ratio(p1, p2)
+            if score >= threshold:
+                G.add_edge(p1, p2, weight=round(score / 100, 3), score=score)
+    return G
+def find_duplicate_groups(G: nx.Graph) -> list[list[str]]:
+    """Return connected components with more than one node."""
+    return [
+        sorted(list(c))
+        for c in nx.connected_components(G)
+        if len(c) > 1
+    ]
+def pick_canonical(group: list[str]) -> str:
+    """Choose the shortest, most 'clean' name as the canonical representative."""
+    return min(group, key=lambda x: (len(x), x))
+def build_dedup_mapping(groups: list[list[str]]) -> dict[str, str]:
+    """Map every duplicate product name to its canonical representative."""
+    mapping = {}
+    for group in groups:
+        canonical = pick_canonical(group)
+        for name in group:
+            mapping[name] = canonical
+    return mapping
+def apply_dedup(df: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
+    """Replace product names with canonical names from the dedup mapping."""
+    df = df.copy()
+    df["product_name"] = df["product_name"].apply(lambda n: mapping.get(n, n))
+    # Drop newly created (transaction_id, product_name) duplicates
+    df = df.drop_duplicates(subset=["transaction_id", "product_name"])
+    return df
+# ============================================================================
+#  FREQUENT PATTERN MINING
+# ============================================================================
+def build_transaction_matrix(df: pd.DataFrame) -> pd.DataFrame:
+    """One-hot encoded transaction-item matrix."""
+    basket = df.groupby(["transaction_id", "product_name"])["product_name"].count().unstack().fillna(0)
+    basket = basket.applymap(lambda x: True if x > 0 else False)
+    return basket
+def mine_frequent_itemsets(
+    basket: pd.DataFrame,
+    algorithm: str = "fpgrowth",
+    min_support: float = 0.05,
+) -> pd.DataFrame:
+    if not MLXTEND_OK:
+        st.error("mlxtend is not installed. Cannot mine frequent itemsets.")
+        return pd.DataFrame()
+    try:
+        if algorithm == "apriori":
+            fi = apriori(basket, min_support=min_support, use_colnames=True)
+        else:
+            fi = fpgrowth(basket, min_support=min_support, use_colnames=True)
+        if fi.empty:
+            return fi
+        fi["itemset_size"] = fi["itemsets"].apply(len)
+        fi["items"] = fi["itemsets"].apply(lambda x: ", ".join(sorted(x)))
+        fi = fi.sort_values("support", ascending=False).reset_index(drop=True)
+        return fi
+    except Exception as e:
+        st.error(f"Error during frequent itemset mining: {e}")
+        return pd.DataFrame()
+def generate_association_rules_df(
+    fi: pd.DataFrame,
+    min_confidence: float = 0.3,
+    min_lift: float = 1.0,
+) -> pd.DataFrame:
+    if not MLXTEND_OK or fi.empty:
+        return pd.DataFrame()
+    try:
+        rules = association_rules(fi, metric="confidence", min_threshold=min_confidence)
+        rules = rules[rules["lift"] >= min_lift]
+        rules["antecedents_str"] = rules["antecedents"].apply(lambda x: ", ".join(sorted(x)))
+        rules["consequents_str"] = rules["consequents"].apply(lambda x: ", ".join(sorted(x)))
+        rules = rules.sort_values("lift", ascending=False).reset_index(drop=True)
+        return rules
+    except Exception as e:
+        st.error(f"Error generating association rules: {e}")
+        return pd.DataFrame()
+# ============================================================================
+#  CO-PURCHASE GRAPH
+# ============================================================================
+def build_copurchase_graph(df: pd.DataFrame) -> nx.Graph:
+    """
+    Build a co-purchase graph.
+    Nodes = products (sized by frequency); edges = # shared transactions.
+    """
+    G = nx.Graph()
+    product_freq = df.groupby("product_name")["transaction_id"].nunique().to_dict()
+    for product, freq in product_freq.items():
+        G.add_node(product, frequency=freq)
+    txn_groups = df.groupby("transaction_id")["product_name"].apply(list)
+    for products_in_txn in txn_groups:
+        for p1, p2 in combinations(products_in_txn, 2):
+            if G.has_edge(p1, p2):
+                G[p1][p2]["weight"] += 1
+            else:
+                G.add_edge(p1, p2, weight=1)
+    return G
+# ============================================================================
+#  PYVIS GRAPH RENDERING
+# ============================================================================
+def pyvis_similarity_graph(G: nx.Graph, height: int = 500) -> str:
+    """Render similarity graph with PyVis and return HTML string."""
+    if not PYVIS_OK:
+        return ""
+    net = Network(height=f"{height}px", width="100%", bgcolor="#1a1a2e", font_color="white")
+    net.barnes_hut(gravity=-5000, central_gravity=0.3, spring_length=120)
+    # Colour by component
+    components_list = list(nx.connected_components(G))
+    color_palette = [
+        "#a78bfa", "#60a5fa", "#34d399", "#f59e0b",
+        "#f87171", "#fb923c", "#e879f9", "#38bdf8",
+    ]
+    node_color = {}
+    for idx, comp in enumerate(components_list):
+        color = color_palette[idx % len(color_palette)] if len(comp) > 1 else "#64748b"
+        for n in comp:
+            node_color[n] = color
+    for node in G.nodes():
+        degree = G.degree(node)
+        net.add_node(
+            node,
+            label=node,
+            color=node_color.get(node, "#64748b"),
+            size=15 + degree * 4,
+            title=f"Product: {node}<br>Connections: {degree}",
+        )
+    for u, v, data in G.edges(data=True):
+        score = data.get("score", 0)
+        net.add_edge(
+            u, v,
+            value=data.get("weight", 1),
+            title=f"Similarity: {score:.0f}%",
+            color=f"rgba(167,139,250,{min(1.0, score/100)})",
+        )
+    net.set_options("""
+    {
+      "interaction": {"hover": true, "tooltipDelay": 100},
+      "physics": {"stabilization": {"iterations": 100}}
+    }
+    """)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".html", mode="w", encoding="utf-8") as f:
+        net.save_graph(f.name)
+        return open(f.name, "r", encoding="utf-8").read()
+def pyvis_copurchase_graph(
+    G: nx.Graph,
+    min_weight: int = 1,
+    category_filter: list[str] | None = None,
+    height: int = 600,
+) -> str:
+    """Render co-purchase graph with PyVis and return HTML string."""
+    if not PYVIS_OK:
+        return ""
+    net = Network(height=f"{height}px", width="100%", bgcolor="#1a1a2e", font_color="white")
+    net.barnes_hut(gravity=-6000, central_gravity=0.3, spring_length=150)
+    # Filter edges
+    filtered_edges = [
+        (u, v, d) for u, v, d in G.edges(data=True) if d.get("weight", 0) >= min_weight
+    ]
+    if not filtered_edges:
+        return ""
+    active_nodes = set()
+    for u, v, _ in filtered_edges:
+        active_nodes.add(u)
+        active_nodes.add(v)
+    max_freq = max((G.nodes[n].get("frequency", 1) for n in active_nodes), default=1)
+    max_weight = max((d.get("weight", 1) for _, _, d in filtered_edges), default=1)
+    for node in active_nodes:
+        freq = G.nodes[node].get("frequency", 1)
+        size = 12 + (freq / max_freq) * 30
+        net.add_node(
+            node,
+            label=node,
+            size=size,
+            color="#6366f1",
+            title=f"<b>{node}</b><br>Transaction frequency: {freq}",
+            font={"size": 12},
+        )
+    for u, v, data in filtered_edges:
+        w = data.get("weight", 1)
+        thickness = 1 + (w / max_weight) * 6
+        net.add_edge(
+            u, v,
+            value=thickness,
+            title=f"Co-purchased in {w} transaction(s)",
+            color=f"rgba(96,165,250,{min(0.9, 0.2 + w / max_weight * 0.7)})",
+        )
+    net.set_options("""
+    {
+      "interaction": {"hover": true, "tooltipDelay": 100},
+      "physics": {"stabilization": {"iterations": 150}}
+    }
+    """)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".html", mode="w", encoding="utf-8") as f:
+        net.save_graph(f.name)
+        return open(f.name, "r", encoding="utf-8").read()
+def plotly_similarity_graph_fallback(G: nx.Graph) -> go.Figure:
+    """Plotly fallback when PyVis unavailable."""
+    pos = nx.spring_layout(G, seed=42)
+    edge_x, edge_y = [], []
+    for u, v in G.edges():
+        x0, y0 = pos[u]; x1, y1 = pos[v]
+        edge_x += [x0, x1, None]; edge_y += [y0, y1, None]
+    edge_trace = go.Scatter(
+        x=edge_x, y=edge_y, mode="lines",
+        line=dict(width=1, color="rgba(167,139,250,0.5)"),
+        hoverinfo="none",
+    )
+    node_x = [pos[n][0] for n in G.nodes()]
+    node_y = [pos[n][1] for n in G.nodes()]
+    node_text = list(G.nodes())
+    node_trace = go.Scatter(
+        x=node_x, y=node_y, mode="markers+text",
+        marker=dict(size=14, color="#a78bfa", line=dict(width=1, color="white")),
+        text=node_text, textposition="top center",
+        hoverinfo="text",
+    )
+    fig = go.Figure(
+        data=[edge_trace, node_trace],
+        layout=go.Layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(26,26,46,1)",
+            font=dict(color="white"),
+            showlegend=False,
+            margin=dict(l=20, r=20, t=20, b=20),
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        ),
+    )
+    return fig
+def plotly_copurchase_fallback(G: nx.Graph, min_weight: int = 1) -> go.Figure:
+    """Plotly fallback co-purchase graph."""
+    H = nx.Graph()
+    for u, v, d in G.edges(data=True):
+        if d.get("weight", 0) >= min_weight:
+            H.add_edge(u, v, weight=d["weight"])
+    for n, d in G.nodes(data=True):
+        if n in H:
+            H.nodes[n]["frequency"] = d.get("frequency", 1)
+    if H.number_of_edges() == 0:
+        return go.Figure()
+    pos = nx.spring_layout(H, seed=42)
+    edge_x, edge_y = [], []
+    for u, v in H.edges():
+        x0, y0 = pos[u]; x1, y1 = pos[v]
+        edge_x += [x0, x1, None]; edge_y += [y0, y1, None]
+    edge_trace = go.Scatter(
+        x=edge_x, y=edge_y, mode="lines",
+        line=dict(width=1, color="rgba(96,165,250,0.4)"),
+        hoverinfo="none",
+    )
+    freqs = [H.nodes[n].get("frequency", 1) for n in H.nodes()]
+    max_f = max(freqs) if freqs else 1
+    node_trace = go.Scatter(
+        x=[pos[n][0] for n in H.nodes()],
+        y=[pos[n][1] for n in H.nodes()],
+        mode="markers+text",
+        marker=dict(
+            size=[10 + 20 * (f / max_f) for f in freqs],
+            color=freqs,
+            colorscale="Viridis",
+            showscale=True,
+            colorbar=dict(title="Frequency", titlefont=dict(color="white"), tickfont=dict(color="white")),
+            line=dict(width=1, color="white"),
+        ),
+        text=list(H.nodes()),
+        textposition="top center",
+        hoverinfo="text",
+    )
+    fig = go.Figure(
+        data=[edge_trace, node_trace],
+        layout=go.Layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(26,26,46,1)",
+            font=dict(color="white"),
+            showlegend=False,
+            margin=dict(l=20, r=20, t=20, b=20),
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        ),
+    )
+    return fig
+# ============================================================================
+#  INSIGHTS GENERATOR
+# ============================================================================
+def generate_insights(rules: pd.DataFrame, fi: pd.DataFrame, df: pd.DataFrame) -> list[str]:
+    insights = []
+    if rules.empty:
+        insights.append("No association rules found. Try lowering minimum support or confidence.")
+        return insights
+    # Top rule by lift
+    top = rules.iloc[0]
+    insights.append(
+        f"**🏆 Strongest Association:** Customers who buy **{top['antecedents_str']}** "
+        f"also tend to buy **{top['consequents_str']}** "
+        f"(Lift: {top['lift']:.2f}, Confidence: {top['confidence']:.0%})."
+    )
+    # Cross-sell
+    high_conf = rules[rules["confidence"] >= 0.6]
+    if not high_conf.empty:
+        r = high_conf.iloc[0]
+        insights.append(
+            f"**🔁 Cross-sell Opportunity:** Place **{r['consequents_str']}** "
+            f"near **{r['antecedents_str']}** — "
+            f"{r['confidence']:.0%} of buyers purchase both."
+        )
+    # Bundle suggestions
+    size2 = fi[fi["itemset_size"] == 2].head(3)
+    if not size2.empty:
+        pairs = size2["items"].tolist()
+        insights.append(
+            f"**📦 Bundle Promotions:** Consider bundling — "
+            + "; ".join([f"*{p}*" for p in pairs]) + "."
+        )
+    # Most frequent product
+    top_product = df.groupby("product_name")["transaction_id"].nunique().idxmax()
+    insights.append(
+        f"**⭐ Best-Seller:** **{top_product.title()}** appears in the most transactions. "
+        "Ensure it is always well-stocked and prominently displayed."
+    )
+    # High-lift rules for placement
+    placement = rules[rules["lift"] > 2].head(2)
+    for _, r in placement.iterrows():
+        insights.append(
+            f"**🗺️ Shelf Placement:** Products **{r['antecedents_str']}** and "
+            f"**{r['consequents_str']}** have lift {r['lift']:.2f} — "
+            "placing them in adjacent aisles may increase basket size."
+        )
+    return insights
+# ============================================================================
+#  SESSION STATE INITIALISATION
+# ============================================================================
+def init_state():
+    defaults = {
+        "raw_df": None,
+        "clean_df": None,
+        "dedup_df": None,
+        "clean_stats": None,
+        "sim_graph": None,
+        "dup_groups": None,
+        "dedup_mapping": None,
+        "copurchase_graph": None,
+        "frequent_itemsets": None,
+        "rules_df": None,
+        "page": "🏠 Project Overview",
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+init_state()
+# ============================================================================
+#  SIDEBAR NAVIGATION
+# ============================================================================
+with st.sidebar:
+    st.markdown(
+        """
+        <div style='text-align:center; padding: 1rem 0;'>
+            <div style='font-size: 2.5rem;'>🛒</div>
+            <div style='font-size: 1.1rem; font-weight: 700; color: #a78bfa;'>Market Basket Analysis</div>
+            <div style='font-size: 0.75rem; color: #64748b; margin-top: 0.2rem;'>Final Year Project</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.divider()
+    pages = [
+        "🏠 Project Overview",
+        "📂 Dataset Upload",
+        "🧹 Data Cleaning & Deduplication",
+        "🔗 Product Similarity Graph",
+        "📊 Frequent Itemsets",
+        "📋 Association Rules",
+        "🌐 Co-purchase Graph",
+        "💡 Insights & Recommendations",
+        "⬇️ Download Results",
+    ]
+    for page in pages:
+        is_active = st.session_state.page == page
+        if st.button(
+            page,
+            key=f"nav_{page}",
+            use_container_width=True,
+        ):
+            st.session_state.page = page
+            st.rerun()
+    st.divider()
+    # Quick-status pills
+    if st.session_state.raw_df is not None:
+        st.markdown(
+            f"""
+            <div style='font-size:0.8rem; color:#94a3b8; margin-bottom:0.5rem;'>📌 Dataset Status</div>
+            {badge('Uploaded ✓', 'green')}
+            {badge(f"{st.session_state.raw_df['transaction_id'].nunique()} Txns", 'blue')}
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.session_state.dedup_df is not None:
+            st.markdown(badge("Deduped ✓", "green"), unsafe_allow_html=True)
+        if st.session_state.frequent_itemsets is not None and not st.session_state.frequent_itemsets.empty:
+            st.markdown(badge("Patterns Mined ✓", "purple"), unsafe_allow_html=True)
+    else:
+        st.markdown(
+            f'<div style="color:#64748b; font-size:0.8rem;">Upload a dataset to begin.</div>',
+            unsafe_allow_html=True,
+        )
+# ============================================================================
+#  PAGE: PROJECT OVERVIEW
+# ============================================================================
+if st.session_state.page == "🏠 Project Overview":
+    st.markdown(
+        """
+        <div class='hero-banner'>
+            <h1>🛒 Market Basket Analysis at Scale</h1>
+            <p>
+                Frequent Pattern & Association Rule Mining via<br>
+                <strong>Graph-based Entity Resolution</strong> &
+                <strong>Data Deduplication</strong><br>
+                Applied to Retail Supermarket Chain Analytics
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown(
+            """
+            <div class='card'>
+                <div style='font-size:2rem;'>🧹</div>
+                <div style='font-size:1.1rem; font-weight:700; color:#a78bfa; margin:0.5rem 0;'>Data Cleaning</div>
+                <p style='color:#94a3b8; font-size:0.9rem;'>
+                    Normalise product names, remove duplicate rows, and handle
+                    invalid transactions before analysis begins.
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with col2:
+        st.markdown(
+            """
+            <div class='card'>
+                <div style='font-size:2rem;'>🔗</div>
+                <div style='font-size:1.1rem; font-weight:700; color:#60a5fa; margin:0.5rem 0;'>Graph Entity Resolution</div>
+                <p style='color:#94a3b8; font-size:0.9rem;'>
+                    Use RapidFuzz + NetworkX to build a product-similarity graph
+                    and identify duplicate product records across variants.
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with col3:
+        st.markdown(
+            """
+            <div class='card'>
+                <div style='font-size:2rem;'>📈</div>
+                <div style='font-size:1.1rem; font-weight:700; color:#34d399; margin:0.5rem 0;'>Pattern Mining</div>
+                <p style='color:#94a3b8; font-size:0.9rem;'>
+                    Apply Apriori / FP-Growth to discover frequent itemsets and
+                    generate actionable association rules with Support, Confidence, and Lift.
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    st.markdown("### 🏗️ System Architecture")
+    st.markdown(
+        """
+        <div class='card'>
+        <pre style='color:#e2e8f0; font-family: monospace; font-size: 0.85rem; line-height:1.8;'>
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                  SUPERMARKET CSV DATASET                         │
+  │  transaction_id │ product_id │ product_name │ quantity │ category│
+  └────────────────────────┬─────────────────────────────────────────┘
+                           │
+                           ▼
+  ┌────────────────────────────────────────┐
+  │  1. DATA PREPROCESSING                 │
+  │   • Normalize names (lowercase, trim)  │
+  │   • Remove nulls & duplicate rows      │
+  │   • Compute before/after statistics    │
+  └────────────────────┬───────────────────┘
+                       │
+                       ▼
+  ┌────────────────────────────────────────┐
+  │  2. GRAPH-BASED ENTITY RESOLUTION      │
+  │   • RapidFuzz pairwise similarity      │
+  │   • Build product similarity graph     │
+  │   • Find connected components          │
+  │   • Map duplicates → canonical names   │
+  └────────────────────┬───────────────────┘
+                       │
+                       ▼
+  ┌────────────────────────────────────────┐
+  │  3. FREQUENT PATTERN MINING            │
+  │   • Build transaction-item matrix      │
+  │   • Apriori or FP-Growth algorithm     │
+  │   • Filter by min_support              │
+  └────────────────────┬───────────────────┘
+                       │
+                       ▼
+  ┌────────────────────────────────────────┐
+  │  4. ASSOCIATION RULE GENERATION        │
+  │   • Compute Support, Confidence, Lift  │
+  │   • Filter rules by thresholds         │
+  │   • Rank rules by Lift                 │
+  └────────────────────┬───────────────────┘
+                       │
+                       ▼
+  ┌────────────────────────────────────────┐
+  │  5. INTERACTIVE STREAMLIT DASHBOARD    │
+  │   • Product similarity graph (PyVis)   │
+  │   • Co-purchase network (PyVis)        │
+  │   • Charts, tables, insights           │
+  │   • Downloadable CSV results           │
+  └────────────────────────────────────────┘
+        </pre>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown("### 🛠️ Technology Stack")
+    cols = st.columns(4)
+    techs = [
+        ("Python 3.10+", "Core language", "blue"),
+        ("Streamlit", "Web dashboard framework", "purple"),
+        ("Pandas / NumPy", "Data manipulation", "green"),
+        ("NetworkX", "Graph construction & analytics", "blue"),
+        ("PyVis", "Interactive graph rendering", "purple"),
+        ("Plotly", "Interactive charts", "green"),
+        ("mlxtend", "Apriori / FP-Growth / Rules", "blue"),
+        ("RapidFuzz", "Approximate string matching", "purple"),
+    ]
+    for i, (name, desc, kind) in enumerate(techs):
+        with cols[i % 4]:
+            st.markdown(
+                f"""
+                <div style='background:rgba(255,255,255,0.04); border-radius:12px;
+                     padding:0.8rem; margin-bottom:0.8rem; text-align:center;'>
+                    {badge(name, kind)}
+                    <div style='color:#94a3b8; font-size:0.78rem; margin-top:0.4rem;'>{desc}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+    st.info("👈 Navigate using the sidebar. Start with **📂 Dataset Upload** to load your data.")
+# ============================================================================
+#  PAGE: DATASET UPLOAD
+# ============================================================================
+elif st.session_state.page == "📂 Dataset Upload":
+    st.markdown("<div class='section-header'>📂 Dataset Upload</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-sub'>Upload your supermarket transaction CSV or use the sample dataset.</div>", unsafe_allow_html=True)
+    # --- Sample dataset download ---
+    with open(SAMPLE_CSV_PATH, "rb") as f:
+        st.download_button(
+            "⬇️ Download Sample CSV",
+            data=f.read(),
+            file_name="sample_supermarket_transactions.csv",
+            mime="text/csv",
+            key="dl_sample",
+        )
+    st.markdown("---")
+    uploaded_file = st.file_uploader(
+        "Upload CSV File",
+        type=["csv"],
+        key="csv_uploader",
+        help="Required columns: transaction_id, product_name. Optional: product_id, quantity, category",
+    )
+    if uploaded_file is not None:
+        try:
+            raw_df = pd.read_csv(uploaded_file)
+            st.success(f"✅ File uploaded: **{uploaded_file.name}** — {len(raw_df):,} rows, {len(raw_df.columns)} columns")
+            st.markdown("#### Preview (first 10 rows)")
+            st.dataframe(raw_df.head(10), use_container_width=True)
+            # Column mapping
+            st.markdown("#### Column Mapping")
+            st.markdown(
+                "<div style='color:#94a3b8; font-size:0.9rem;'>Map your CSV columns to the required fields. "
+                "Leave blank if the column doesn't exist.</div>",
+                unsafe_allow_html=True,
+            )
+            avail_cols = ["(not present)"] + list(raw_df.columns)
+            col_a, col_b = st.columns(2)
+            def default_col(name):
+                if name in raw_df.columns:
+                    return name
+                for c in raw_df.columns:
+                    if name.lower() in c.lower():
+                        return c
+                return "(not present)"
+            with col_a:
+                txn_col = st.selectbox("transaction_id *", avail_cols, index=avail_cols.index(default_col("transaction_id")), key="map_txn")
+                prod_col = st.selectbox("product_name *", avail_cols, index=avail_cols.index(default_col("product_name")), key="map_prod")
+            with col_b:
+                pid_col  = st.selectbox("product_id (optional)", avail_cols, index=avail_cols.index(default_col("product_id")), key="map_pid")
+                qty_col  = st.selectbox("quantity (optional)", avail_cols, index=avail_cols.index(default_col("quantity")), key="map_qty")
+                cat_col  = st.selectbox("category (optional)", avail_cols, index=avail_cols.index(default_col("category")), key="map_cat")
+            col_map = {
+                "transaction_id": txn_col if txn_col != "(not present)" else None,
+                "product_name":   prod_col if prod_col != "(not present)" else None,
+                "product_id":     pid_col  if pid_col  != "(not present)" else None,
+                "quantity":       qty_col  if qty_col  != "(not present)" else None,
+                "category":       cat_col  if cat_col  != "(not present)" else None,
+            }
+            if st.button("✅ Confirm Mapping & Load Dataset", key="confirm_mapping"):
+                mapped_df = load_and_map_columns(raw_df, col_map)
+                valid, msg = validate_dataframe(mapped_df)
+                if not valid:
+                    st.error(f"❌ Validation error: {msg}")
+                else:
+                    st.session_state.raw_df     = mapped_df
+                    st.session_state.clean_df   = None
+                    st.session_state.dedup_df   = None
+                    st.session_state.clean_stats= None
+                    st.session_state.sim_graph  = None
+                    st.session_state.dup_groups = None
+                    st.session_state.dedup_mapping = None
+                    st.session_state.copurchase_graph = None
+                    st.session_state.frequent_itemsets = None
+                    st.session_state.rules_df   = None
+                    st.success("✅ Dataset loaded successfully! Proceed to **🧹 Data Cleaning & Deduplication**.")
+        except Exception as e:
+            st.error(f"❌ Failed to read file: {e}")
+    # Auto-load sample
+    st.markdown("---")
+    if st.button("🔄 Load Sample Dataset Directly", key="load_sample"):
+        sample = pd.read_csv(SAMPLE_CSV_PATH)
+        valid, msg = validate_dataframe(sample)
+        if valid:
+            st.session_state.raw_df = sample
+            st.session_state.clean_df = None
+            st.session_state.dedup_df = None
+            st.session_state.clean_stats = None
+            st.session_state.sim_graph = None
+            st.session_state.dup_groups = None
+            st.session_state.dedup_mapping = None
+            st.session_state.copurchase_graph = None
+            st.session_state.frequent_itemsets = None
+            st.session_state.rules_df = None
+            st.success("✅ Sample dataset loaded! Proceed to **🧹 Data Cleaning & Deduplication**.")
+        else:
+            st.error(f"Sample dataset error: {msg}")
+# ============================================================================
+#  PAGE: DATA CLEANING & DEDUPLICATION
+# ============================================================================
+elif st.session_state.page == "🧹 Data Cleaning & Deduplication":
+    st.markdown("<div class='section-header'>🧹 Data Cleaning & Deduplication</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-sub'>Normalize product names and remove duplicate records.</div>", unsafe_allow_html=True)
+    if st.session_state.raw_df is None:
+        st.warning("⚠️ Please upload a dataset first (📂 Dataset Upload).")
+        st.stop()
+    if st.button("▶️ Run Data Cleaning", key="run_clean"):
+        with st.spinner("Cleaning data…"):
+            clean_df, stats = preprocess(st.session_state.raw_df)
+            st.session_state.clean_df    = clean_df
+            st.session_state.clean_stats = stats
+    if st.session_state.clean_df is not None:
+        stats = st.session_state.clean_stats
+        st.markdown("#### 📊 Before vs After Cleaning")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Raw Rows",          f"{stats['raw_rows']:,}")
+        c2.metric("Raw Transactions",  f"{stats['raw_transactions']:,}")
+        c3.metric("Raw Unique Products", f"{stats['raw_products']:,}")
+        c4.metric("Duplicate Rows Removed", f"{stats['duplicate_rows_removed']:,}")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Clean Rows",          f"{stats['clean_rows']:,}")
+        c2.metric("Clean Transactions",  f"{stats['clean_transactions']:,}")
+        c3.metric("Clean Unique Products", f"{stats['clean_products']:,}")
+        st.markdown("---")
+        with st.expander("🔍 Inspect Cleaned Data"):
+            st.dataframe(st.session_state.clean_df.head(100), use_container_width=True)
+        # Graph-based entity resolution
+        st.markdown("#### 🔗 Graph-Based Entity Resolution")
+        sim_thresh = st.slider(
+            "Similarity Threshold (%)",
+            min_value=60, max_value=99, value=80, step=1,
+            key="sim_thresh",
+            help="Product names with similarity ≥ threshold will be grouped as potential duplicates.",
+        )
+        if st.button("🔍 Detect Duplicate Products", key="detect_dupes"):
+            with st.spinner("Building similarity graph…"):
+                products = sorted(st.session_state.clean_df["product_name"].unique().tolist())
+                G = build_similarity_graph(products, threshold=float(sim_thresh))
+                dup_groups = find_duplicate_groups(G)
+                dedup_mapping = build_dedup_mapping(dup_groups)
+                st.session_state.sim_graph     = G
+                st.session_state.dup_groups    = dup_groups
+                st.session_state.dedup_mapping = dedup_mapping
+        if st.session_state.dup_groups is not None:
+            groups = st.session_state.dup_groups
+            mapping = st.session_state.dedup_mapping
+            if not groups:
+                st.info("✅ No duplicate product groups found at the current similarity threshold.")
+            else:
+                st.markdown(f"**Found {len(groups)} potential duplicate group(s):**")
+                dup_table = []
+                for g in groups:
+                    canonical = pick_canonical(g)
+                    for name in g:
+                        dup_table.append({
+                            "Product Variant": name,
+                            "Canonical Name": canonical,
+                            "Same Group": "✓" if name != canonical else "★ Canonical",
+                        })
+                st.dataframe(pd.DataFrame(dup_table), use_container_width=True)
+                st.info(
+                    f"📌 **{len(mapping)} product variants** will be mapped to "
+                    f"**{len(groups)} canonical names** after deduplication."
+                )
+                if st.button("✅ Apply Deduplication", key="apply_dedup"):
+                    with st.spinner("Applying deduplication…"):
+                        dedup_df = apply_dedup(st.session_state.clean_df, mapping)
+                        st.session_state.dedup_df = dedup_df
+                        st.session_state.copurchase_graph = build_copurchase_graph(dedup_df)
+                    before_prods = st.session_state.clean_df["product_name"].nunique()
+                    after_prods  = dedup_df["product_name"].nunique()
+                    st.success(
+                        f"✅ Deduplication complete! Products: {before_prods} → {after_prods} "
+                        f"(reduced by {before_prods - after_prods})."
+                    )
+            # If dedup already applied
+            if st.session_state.dedup_df is not None:
+                with st.expander("🔍 Inspect Deduplicated Data"):
+                    st.dataframe(st.session_state.dedup_df.head(100), use_container_width=True)
+    else:
+        st.info("Click **▶️ Run Data Cleaning** to begin.")
+# ============================================================================
+#  PAGE: PRODUCT SIMILARITY GRAPH
+# ============================================================================
+elif st.session_state.page == "🔗 Product Similarity Graph":
+    st.markdown("<div class='section-header'>🔗 Product Similarity Graph</div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div class='section-sub'>Each node is a product name. Edges connect names that are similar "
+        "(e.g., 'Whole Milk' ≈ 'whole milk' ≈ 'whole-milk'). Duplicate groups are colour-coded.</div>",
+        unsafe_allow_html=True,
+    )
+    if st.session_state.sim_graph is None:
+        st.warning("⚠️ Run **Detect Duplicate Products** in the Data Cleaning page first.")
+        st.stop()
+    G = st.session_state.sim_graph
+    st.markdown(f"**Graph:** {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
+    if G.number_of_edges() == 0:
+        st.info("No similar product pairs found at the current similarity threshold. Try lowering it.")
+    else:
+        if PYVIS_OK:
+            html = pyvis_similarity_graph(G, height=550)
+            if html:
+                st.markdown("<div class='graph-container'>", unsafe_allow_html=True)
+                components.html(html, height=570, scrolling=False)
+                st.markdown("</div>", unsafe_allow_html=True)
+            else:
+                st.plotly_chart(plotly_similarity_graph_fallback(G), use_container_width=True)
+        else:
+            st.warning("PyVis not installed — rendering fallback Plotly graph.")
+            st.plotly_chart(plotly_similarity_graph_fallback(G), use_container_width=True)
+    # Duplicate groups summary
+    if st.session_state.dup_groups:
+        with st.expander(f"📋 View {len(st.session_state.dup_groups)} Duplicate Group(s)"):
+            for i, g in enumerate(st.session_state.dup_groups, 1):
+                canonical = pick_canonical(g)
+                st.markdown(
+                    f"**Group {i}:** " + " · ".join(
+                        [f"**{n}**" if n == canonical else f"`{n}`" for n in g]
+                    ) + f" → canonical: **{canonical}**"
+                )
+# ============================================================================
+#  PAGE: FREQUENT ITEMSETS
+# ============================================================================
+elif st.session_state.page == "📊 Frequent Itemsets":
+    st.markdown("<div class='section-header'>📊 Frequent Itemsets</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-sub'>Discover items that frequently appear together in transactions.</div>", unsafe_allow_html=True)
+    working_df = st.session_state.dedup_df if st.session_state.dedup_df is not None else st.session_state.clean_df
+    if working_df is None:
+        st.warning("⚠️ Please clean your dataset first (🧹 Data Cleaning & Deduplication).")
+        st.stop()
+    if not MLXTEND_OK:
+        st.error("❌ mlxtend is not installed. Run: `pip install mlxtend`")
+        st.stop()
+    col_l, col_r = st.columns([1, 2])
+    with col_l:
+        algorithm = st.selectbox("Algorithm", ["fpgrowth", "apriori"], key="algo_sel",
+                                 help="FP-Growth is generally faster; Apriori is more memory-efficient for sparse data.")
+        min_support = st.slider("Minimum Support", 0.01, 0.5, 0.05, 0.01, key="min_sup",
+                                help="Fraction of transactions that must contain the itemset.")
+        run_mine = st.button("▶️ Mine Frequent Itemsets", key="run_mine")
+    if run_mine:
+        with st.spinner(f"Running {algorithm.upper()} (min_support={min_support:.2f})…"):
+            basket = build_transaction_matrix(working_df)
+            fi = mine_frequent_itemsets(basket, algorithm=algorithm, min_support=min_support)
+            st.session_state.frequent_itemsets = fi
+    fi = st.session_state.frequent_itemsets
+    if fi is not None:
+        if fi.empty:
+            st.warning(
+                "⚠️ No frequent itemsets found. "
+                "Try **lowering the minimum support** or upload a dataset with more repeated item combinations."
+            )
+        else:
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Total Frequent Itemsets", f"{len(fi):,}")
+            c2.metric("Max Itemset Size", f"{fi['itemset_size'].max()}")
+            c3.metric("Top Support", f"{fi['support'].max():.3f}")
+            tab1, tab2 = st.tabs(["📋 Table", "📊 Charts"])
+            with tab1:
+                display_fi = fi[["items", "support", "itemset_size"]].copy()
+                display_fi.columns = ["Items", "Support", "Size"]
+                display_fi["Support"] = display_fi["Support"].apply(lambda x: f"{x:.4f}")
+                st.dataframe(display_fi, use_container_width=True, height=400)
+            with tab2:
+                top20 = fi.head(20).copy()
+                fig_bar = px.bar(
+                    top20, x="support", y="items", orientation="h",
+                    color="support", color_continuous_scale="Purples",
+                    title="Top 20 Frequent Itemsets by Support",
+                    labels={"support": "Support", "items": "Itemset"},
+                )
+                fig_bar.update_layout(
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(26,26,46,0.8)",
+                    font=dict(color="white"), yaxis=dict(autorange="reversed"),
+                )
+                st.plotly_chart(fig_bar, use_container_width=True)
+                size_dist = fi["itemset_size"].value_counts().reset_index()
+                size_dist.columns = ["Size", "Count"]
+                fig_pie = px.pie(size_dist, names="Size", values="Count",
+                                 title="Itemset Size Distribution",
+                                 color_discrete_sequence=px.colors.sequential.Purp)
+                fig_pie.update_layout(paper_bgcolor="rgba(0,0,0,0)", font=dict(color="white"))
+                st.plotly_chart(fig_pie, use_container_width=True)
+    else:
+        st.info("Configure parameters above and click **▶️ Mine Frequent Itemsets**.")
+# ============================================================================
+#  PAGE: ASSOCIATION RULES
+# ============================================================================
+elif st.session_state.page == "📋 Association Rules":
+    st.markdown("<div class='section-header'>📋 Association Rules</div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div class='section-sub'>Generate if-then rules from frequent itemsets. "
+        "A rule with <b>Lift > 1</b> indicates a positive association — products appear together "
+        "more often than by chance alone.</div>",
+        unsafe_allow_html=True,
+    )
+    fi = st.session_state.frequent_itemsets
+    if fi is None or fi.empty:
+        st.warning("⚠️ Mine frequent itemsets first (📊 Frequent Itemsets).")
+        st.stop()
+    col_l, col_r = st.columns([1, 2])
+    with col_l:
+        min_conf  = st.slider("Minimum Confidence", 0.1, 1.0, 0.3, 0.05, key="min_conf")
+        min_lift  = st.slider("Minimum Lift", 0.5, 5.0, 1.0, 0.1, key="min_lift")
+        run_rules = st.button("▶️ Generate Association Rules", key="gen_rules")
+    if run_rules:
+        with st.spinner("Generating rules…"):
+            rules = generate_association_rules_df(fi, min_confidence=min_conf, min_lift=min_lift)
+            st.session_state.rules_df = rules
+    rules = st.session_state.rules_df
+    if rules is not None:
+        if rules.empty:
+            st.warning("⚠️ No rules meet the selected thresholds. Try lowering minimum confidence or lift.")
+        else:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Total Rules",      f"{len(rules):,}")
+            c2.metric("Max Lift",         f"{rules['lift'].max():.3f}")
+            c3.metric("Max Confidence",   f"{rules['confidence'].max():.3f}")
+            c4.metric("Avg Lift",         f"{rules['lift'].mean():.3f}")
+            # Metric explanations
+            with st.expander("ℹ️ Understanding the Metrics"):
+                st.markdown("""
+                | Metric | Formula | Meaning |
+                |---|---|---|
+                | **Support** | P(A ∪ B) | How often A and B appear together in all transactions |
+                | **Confidence** | P(B \| A) = P(A ∪ B) / P(A) | Of all transactions with A, how many also have B |
+                | **Lift** | Confidence / P(B) | >1 means A and B appear together more than by chance |
+                > ⚠️ Association rules describe **correlation**, not causation.
+                > A lift > 1 suggests a positive relationship worth investigating.
+                """)
+            tab1, tab2 = st.tabs(["📋 Rules Table", "📊 Charts"])
+            with tab1:
+                display_rules = rules[["antecedents_str", "consequents_str", "support", "confidence", "lift"]].copy()
+                display_rules.columns = ["Antecedents (IF)", "Consequents (THEN)", "Support", "Confidence", "Lift"]
+                display_rules["Support"]    = display_rules["Support"].apply(lambda x: f"{x:.4f}")
+                display_rules["Confidence"] = display_rules["Confidence"].apply(lambda x: f"{x:.4f}")
+                display_rules["Lift"]       = display_rules["Lift"].apply(lambda x: f"{x:.3f}")
+                st.dataframe(display_rules, use_container_width=True, height=400)
+            with tab2:
+                fig_sc = px.scatter(
+                    rules,
+                    x="support", y="confidence", size="lift", color="lift",
+                    color_continuous_scale="Viridis",
+                    hover_data={"antecedents_str": True, "consequents_str": True, "lift": ":.3f"},
+                    title="Association Rules: Support vs Confidence (bubble size = Lift)",
+                    labels={"support": "Support", "confidence": "Confidence", "lift": "Lift"},
+                )
+                fig_sc.update_layout(
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(26,26,46,0.8)",
+                    font=dict(color="white"),
+                )
+                st.plotly_chart(fig_sc, use_container_width=True)
+                top10 = rules.head(10).copy()
+                top10["rule"] = top10["antecedents_str"] + " → " + top10["consequents_str"]
+                fig_lift = px.bar(
+                    top10, x="lift", y="rule", orientation="h",
+                    color="lift", color_continuous_scale="Plasma",
+                    title="Top 10 Rules by Lift",
+                    labels={"lift": "Lift", "rule": "Rule"},
+                )
+                fig_lift.update_layout(
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(26,26,46,0.8)",
+                    font=dict(color="white"), yaxis=dict(autorange="reversed"),
+                )
+                st.plotly_chart(fig_lift, use_container_width=True)
+    else:
+        st.info("Configure parameters above and click **▶️ Generate Association Rules**.")
+# ============================================================================
+#  PAGE: CO-PURCHASE GRAPH
+# ============================================================================
+elif st.session_state.page == "🌐 Co-purchase Graph":
+    st.markdown("<div class='section-header'>🌐 Product Co-purchase Graph</div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div class='section-sub'>Nodes represent products. Edges connect products that appear "
+        "together in transactions. Node size reflects transaction frequency; edge thickness reflects "
+        "co-purchase count.</div>",
+        unsafe_allow_html=True,
+    )
+    working_df = st.session_state.dedup_df if st.session_state.dedup_df is not None else st.session_state.clean_df
+    if working_df is None:
+        st.warning("⚠️ Please clean your dataset first.")
+        st.stop()
+    # Build graph if not yet built
+    if st.session_state.copurchase_graph is None:
+        if st.button("▶️ Build Co-purchase Graph", key="build_cop"):
+            with st.spinner("Building co-purchase graph…"):
+                G = build_copurchase_graph(working_df)
+                st.session_state.copurchase_graph = G
+        else:
+            st.info("Click **▶️ Build Co-purchase Graph** to generate the network.")
+            st.stop()
+    G = st.session_state.copurchase_graph
+    col_l, col_r = st.columns([1, 3])
+    with col_l:
+        max_w = max((d["weight"] for _, _, d in G.edges(data=True)), default=1)
+        min_edge = st.slider(
+            "Min Co-purchase Count (edge filter)",
+            min_value=1, max_value=max(1, max_w),
+            value=max(1, max_w // 5),
+            key="cop_min_edge",
+        )
+        st.markdown(f"**Graph:** {G.number_of_nodes()} products, {G.number_of_edges()} edges")
+    with col_r:
+        filtered_edges = [(u, v, d) for u, v, d in G.edges(data=True) if d.get("weight", 0) >= min_edge]
+        if not filtered_edges:
+            st.warning(f"No edges with co-purchase count ≥ {min_edge}. Try lowering the filter.")
+        else:
+            if PYVIS_OK:
+                html = pyvis_copurchase_graph(G, min_weight=min_edge, height=600)
+                if html:
+                    st.markdown("<div class='graph-container'>", unsafe_allow_html=True)
+                    components.html(html, height=620, scrolling=False)
+                    st.markdown("</div>", unsafe_allow_html=True)
+                else:
+                    st.warning("Graph rendering returned empty. Displaying fallback.")
+                    st.plotly_chart(plotly_copurchase_fallback(G, min_edge), use_container_width=True)
+            else:
+                st.warning("PyVis not installed — rendering Plotly fallback.")
+                st.plotly_chart(plotly_copurchase_fallback(G, min_edge), use_container_width=True)
+    # Top products chart
+    st.markdown("---")
+    st.markdown("#### 📊 Top 20 Most Frequent Products")
+    freq_df = working_df.groupby("product_name")["transaction_id"].nunique().reset_index()
+    freq_df.columns = ["Product", "Transactions"]
+    freq_df = freq_df.sort_values("Transactions", ascending=False).head(20)
+    fig_top = px.bar(
+        freq_df, x="Transactions", y="Product", orientation="h",
+        color="Transactions", color_continuous_scale="Teal",
+        title="Top 20 Products by Transaction Frequency",
+    )
+    fig_top.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(26,26,46,0.8)",
+        font=dict(color="white"), yaxis=dict(autorange="reversed"),
+    )
+    st.plotly_chart(fig_top, use_container_width=True)
+# ============================================================================
+#  PAGE: INSIGHTS & RECOMMENDATIONS
+# ============================================================================
+elif st.session_state.page == "💡 Insights & Recommendations":
+    st.markdown("<div class='section-header'>💡 Insights & Recommendations</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-sub'>Data-driven business insights derived from association rules and frequent itemsets.</div>", unsafe_allow_html=True)
+    working_df = st.session_state.dedup_df if st.session_state.dedup_df is not None else st.session_state.clean_df
+    rules = st.session_state.rules_df
+    fi    = st.session_state.frequent_itemsets
+    if working_df is None:
+        st.warning("⚠️ Please clean your dataset first.")
+        st.stop()
+    if rules is None or fi is None:
+        st.warning("⚠️ Please generate association rules first (📋 Association Rules).")
+        st.stop()
+    insights = generate_insights(rules, fi, working_df)
+    st.markdown("### 📌 Key Findings")
+    for insight in insights:
+        st.markdown(
+            f"<div class='card'>{insight}</div>",
+            unsafe_allow_html=True,
+        )
+    st.markdown("---")
+    st.markdown("### 📊 Category-Level Analysis")
+    if "category" in working_df.columns:
+        cat_df = working_df.groupby("category")["transaction_id"].nunique().reset_index()
+        cat_df.columns = ["Category", "Transactions"]
+        cat_df = cat_df.sort_values("Transactions", ascending=False)
+        fig_cat = px.bar(
+            cat_df, x="Category", y="Transactions",
+            color="Transactions", color_continuous_scale="Viridis",
+            title="Transaction Count by Category",
+        )
+        fig_cat.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(26,26,46,0.8)",
+            font=dict(color="white"),
+        )
+        st.plotly_chart(fig_cat, use_container_width=True)
+    st.markdown("### 📈 Confidence vs Lift Heatmap")
+    if rules is not None and not rules.empty:
+        conf_bins = pd.cut(rules["confidence"], bins=5)
+        lift_bins = pd.cut(rules["lift"], bins=5)
+        heat = rules.groupby([conf_bins, lift_bins]).size().unstack(fill_value=0)
+        fig_heat = px.imshow(
+            heat,
+            color_continuous_scale="Purples",
+            title="Rule Density: Confidence Bins vs Lift Bins",
+            labels=dict(x="Lift Range", y="Confidence Range", color="Rule Count"),
+        )
+        fig_heat.update_layout(paper_bgcolor="rgba(0,0,0,0)", font=dict(color="white"))
+        st.plotly_chart(fig_heat, use_container_width=True)
+    st.markdown("### 💼 Recommendations Summary")
+    st.markdown(
+        """
+        <div class='card'>
+        <table style='width:100%; color:#e2e8f0; border-collapse:collapse;'>
+            <tr style='border-bottom:1px solid rgba(255,255,255,0.1);'>
+                <th style='padding:0.8rem; text-align:left; color:#a78bfa;'>Area</th>
+                <th style='padding:0.8rem; text-align:left; color:#a78bfa;'>Strategy</th>
+            </tr>
+            <tr style='border-bottom:1px solid rgba(255,255,255,0.06);'>
+                <td style='padding:0.8rem;'>🗺️ Shelf Placement</td>
+                <td style='padding:0.8rem;'>Place high-lift product pairs in adjacent aisles or sections.</td>
+            </tr>
+            <tr style='border-bottom:1px solid rgba(255,255,255,0.06);'>
+                <td style='padding:0.8rem;'>📦 Bundle Promotions</td>
+                <td style='padding:0.8rem;'>Create combo deals for frequent 2- and 3-item sets to increase basket value.</td>
+            </tr>
+            <tr style='border-bottom:1px solid rgba(255,255,255,0.06);'>
+                <td style='padding:0.8rem;'>🔁 Cross-selling</td>
+                <td style='padding:0.8rem;'>When a customer buys the antecedent, recommend the consequent at checkout.</td>
+            </tr>
+            <tr>
+                <td style='padding:0.8rem;'>📣 Targeted Promotions</td>
+                <td style='padding:0.8rem;'>Offer discounts on low-frequency consequents to customers buying high-confidence antecedents.</td>
+            </tr>
+        </table>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+# ============================================================================
+#  PAGE: DOWNLOAD RESULTS
+# ============================================================================
+elif st.session_state.page == "⬇️ Download Results":
+    st.markdown("<div class='section-header'>⬇️ Download Results</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-sub'>Export all analysis outputs as CSV files.</div>", unsafe_allow_html=True)
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("#### 🧹 Cleaned Data")
+        clean_df = st.session_state.clean_df
+        if clean_df is not None:
+            st.download_button(
+                "⬇️ Download Cleaned Data CSV",
+                data=to_csv_bytes(clean_df),
+                file_name="cleaned_transactions.csv",
+                mime="text/csv",
+                key="dl_clean",
+            )
+        else:
+            st.info("Run Data Cleaning first.")
+        st.markdown("#### 🔄 Deduplicated Data")
+        dedup_df = st.session_state.dedup_df
+        if dedup_df is not None:
+            st.download_button(
+                "⬇️ Download Deduplicated Data CSV",
+                data=to_csv_bytes(dedup_df),
+                file_name="deduplicated_transactions.csv",
+                mime="text/csv",
+                key="dl_dedup",
+            )
+        else:
+            st.info("Run Deduplication first.")
+        st.markdown("#### 🔗 Duplicate Groups")
+        if st.session_state.dup_groups:
+            dup_records = []
+            for g in st.session_state.dup_groups:
+                canonical = pick_canonical(g)
+                for n in g:
+                    dup_records.append({"variant": n, "canonical": canonical})
+            dup_export_df = pd.DataFrame(dup_records)
+            st.download_button(
+                "⬇️ Download Duplicate Groups CSV",
+                data=to_csv_bytes(dup_export_df),
+                file_name="duplicate_groups.csv",
+                mime="text/csv",
+                key="dl_dups",
+            )
+        else:
+            st.info("Run duplicate detection first.")
+    with col2:
+        st.markdown("#### 📊 Frequent Itemsets")
+        fi = st.session_state.frequent_itemsets
+        if fi is not None and not fi.empty:
+            fi_export = fi[["items", "support", "itemset_size"]].copy()
+            fi_export.columns = ["items", "support", "itemset_size"]
+            st.download_button(
+                "⬇️ Download Frequent Itemsets CSV",
+                data=to_csv_bytes(fi_export),
+                file_name="frequent_itemsets.csv",
+                mime="text/csv",
+                key="dl_fi",
+            )
+        else:
+            st.info("Mine frequent itemsets first.")
+        st.markdown("#### 📋 Association Rules")
+        rules = st.session_state.rules_df
+        if rules is not None and not rules.empty:
+            rules_export = rules[["antecedents_str", "consequents_str", "support", "confidence", "lift"]].copy()
+            rules_export.columns = ["antecedents", "consequents", "support", "confidence", "lift"]
+            st.download_button(
+                "⬇️ Download Association Rules CSV",
+                data=to_csv_bytes(rules_export),
+                file_name="association_rules.csv",
+                mime="text/csv",
+                key="dl_rules",
+            )
+        else:
+            st.info("Generate association rules first.")
+    st.markdown("---")
+    st.markdown("#### 📥 Sample Dataset")
+    with open(SAMPLE_CSV_PATH, "rb") as f:
+        st.download_button(
+            "⬇️ Download Sample Supermarket Dataset",
+            data=f.read(),
+            file_name="sample_supermarket_transactions.csv",
+            mime="text/csv",
+            key="dl_sample_bottom",
+        )
